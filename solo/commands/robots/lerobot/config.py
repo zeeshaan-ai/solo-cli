@@ -329,14 +329,10 @@ def get_robot_config_classes(robot_type: str) -> Tuple[Optional[type], Optional[
         from lerobot.teleoperators.koch_leader import KochLeaderConfig
         from lerobot.robots.koch_follower import KochFollowerConfig
         return KochLeaderConfig, KochFollowerConfig
-    elif robot_type == "bi_so100":
-        from lerobot.teleoperators.bi_so_leader import BiSO100LeaderConfig
-        from lerobot.robots.bi_so_follower import BiSO100FollowerConfig
-        return BiSO100LeaderConfig, BiSO100FollowerConfig
-    elif robot_type == "bi_so101":
-        from lerobot.teleoperators.bi_so_leader import BiSO101LeaderConfig
-        from lerobot.robots.bi_so_follower import BiSO101FollowerConfig
-        return BiSO101LeaderConfig, BiSO101FollowerConfig
+    elif robot_type in ("bi_so100", "bi_so101"):
+        from lerobot.teleoperators.bi_so_leader import BiSOLeaderConfig
+        from lerobot.robots.bi_so_follower import BiSOFollowerConfig
+        return BiSOLeaderConfig, BiSOFollowerConfig
     elif robot_type in ["realman_r1d2", "realman_rm65", "realman_rm75"]:
         # RealMan robots use SO101 as leader arm (USB serial)
         # and RealMan arm as follower (network connection)
@@ -472,11 +468,25 @@ def create_bimanual_leader_config(
     leader_id: Optional[str] = None,
 ):
     """
-    Create bimanual leader configuration
+    Create bimanual leader configuration.
+    BiSOLeaderConfig expects left_arm_config and right_arm_config (SOLeaderConfig objects).
     """
+    # Get the single-arm leader config class
+    from lerobot.teleoperators.so_leader import SO101LeaderConfig
+    
+    # Create individual arm configs (ID format: {robot_type}_leader_left to match lerobot's naming)
+    left_arm_config = SO101LeaderConfig(
+        port=left_leader_port,
+        id=f"{leader_id or robot_type}_leader_left"
+    )
+    right_arm_config = SO101LeaderConfig(
+        port=right_leader_port,
+        id=f"{leader_id or robot_type}_leader_right"
+    )
+    
     return leader_config_class(
-        left_arm_port=left_leader_port,
-        right_arm_port=right_leader_port,
+        left_arm_config=left_arm_config,
+        right_arm_config=right_arm_config,
         id=leader_id or f"{robot_type}_leader"
     )
 
@@ -490,15 +500,28 @@ def create_bimanual_follower_config(
     follower_id: Optional[str] = None,
 ):
     """
-    Create bimanual follower configuration with optional camera support
+    Create bimanual follower configuration with optional camera support.
+    BiSOFollowerConfig expects left_arm_config and right_arm_config (SOFollowerConfig objects).
     """
+    from lerobot.robots.so_follower import SO101FollowerConfig
+    
     cameras_dict = build_camera_configuration(camera_config or {})
     
-    return follower_config_class(
-        left_arm_port=left_follower_port,
-        right_arm_port=right_follower_port,
-        id=follower_id or f"{robot_type}_follower",
+    # Create individual arm configs (ID format: {robot_type}_follower_left to match lerobot's naming)
+    left_arm_config = SO101FollowerConfig(
+        port=left_follower_port,
+        id=f"{follower_id or robot_type}_follower_left",
         cameras=cameras_dict if cameras_dict else {}
+    )
+    right_arm_config = SO101FollowerConfig(
+        port=right_follower_port,
+        id=f"{follower_id or robot_type}_follower_right"
+    )
+    
+    return follower_config_class(
+        left_arm_config=left_arm_config,
+        right_arm_config=right_arm_config,
+        id=follower_id or f"{robot_type}_follower"
     )
 
 

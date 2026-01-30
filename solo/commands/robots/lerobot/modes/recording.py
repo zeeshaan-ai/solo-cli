@@ -190,12 +190,16 @@ def recording_mode(config: dict, auto_use: bool = False):
             
             if not left_leader_port or not right_leader_port:
                 left_leader_port, right_leader_port = detect_bimanual_arm_ports("leader")
-                config['left_leader_port'] = left_leader_port
-                config['right_leader_port'] = right_leader_port
+                if 'lerobot' not in config:
+                    config['lerobot'] = {}
+                config['lerobot']['left_leader_port'] = left_leader_port
+                config['lerobot']['right_leader_port'] = right_leader_port
             if not left_follower_port or not right_follower_port:
                 left_follower_port, right_follower_port = detect_bimanual_arm_ports("follower")
-                config['left_follower_port'] = left_follower_port
-                config['right_follower_port'] = right_follower_port
+                if 'lerobot' not in config:
+                    config['lerobot'] = {}
+                config['lerobot']['left_follower_port'] = left_follower_port
+                config['lerobot']['right_follower_port'] = right_follower_port
         else:
             # Single-arm port detection
             from solo.commands.robots.lerobot.utils.helper import port_detection

@@ -4,6 +4,7 @@ Calibration utilities for LeRobot
 Note: Heavy lerobot imports are done lazily inside functions to speed up CLI startup.
 """
 
+import os
 import typer
 from rich.prompt import Prompt, Confirm
 from typing import Dict
@@ -23,13 +24,115 @@ from solo.commands.robots.lerobot.config import (
 )
 from solo.commands.robots.lerobot.realman_config import load_realman_config, prompt_realman_config, test_realman_connection
 
+# Heavy lerobot imports are done lazily inside functions:
+# - from lerobot.scripts.lerobot_calibrate import calibrate, CalibrateConfig
+# - from lerobot.teleoperators import make_teleoperator_from_config
+# - from lerobot.robots import make_robot_from_config
+# - from lerobot.robots.realman_follower import RealManFollowerConfig
+
+
+def check_port_permissions(ports: list) -> bool:
+    """
+    Check if the user has read/write permissions on the given serial ports.
+    
+    Returns True if all ports are accessible, False otherwise.
+    Prints helpful messages about fixing permissions (platform-specific).
+    """
+    import os
+    import platform
+    
+    system = platform.system()
+    all_ok = True
+    
+    for port in ports:
+        # Windows COM ports don't need existence check the same way
+        if system == "Windows":
+            # On Windows, try to open the port to check access
+            try:
+                import serial
+                s = serial.Serial(port, timeout=0.1)
+                s.close()
+                typer.echo(f"   ✅ {port}: Accessible")
+            except serial.SerialException:
+                typer.echo(f"   ❌ {port}: Cannot access (may be in use or not exist)")
+                all_ok = False
+            except Exception:
+                typer.echo(f"   ❌ {port}: Cannot access")
+                all_ok = False
+            continue
+        
+        # Unix-like systems (Linux, macOS)
+        if not os.path.exists(port):
+            typer.echo(f"   ❌ {port}: Port not found")
+            all_ok = False
+            continue
+        
+        # Check read and write permissions
+        can_read = os.access(port, os.R_OK)
+        can_write = os.access(port, os.W_OK)
+        
+        if can_read and can_write:
+            typer.echo(f"   ✅ {port}: Accessible")
+        else:
+            all_ok = False
+            # Get current permissions info
+            try:
+                port_stat = os.stat(port)
+                import grp
+                import pwd
+                owner = pwd.getpwuid(port_stat.st_uid).pw_name
+                group = grp.getgrgid(port_stat.st_gid).gr_name
+                typer.echo(f"   ❌ {port}: Permission denied (owner: {owner}, group: {group})")
+            except Exception:
+                typer.echo(f"   ❌ {port}: Permission denied")
+    
+    if not all_ok:
+        typer.echo("\n⚠️  USB port permission issue detected!")
+        
+        if system == "Linux":
+            typer.echo("   To fix, run one of these commands:\n")
+            typer.echo("   Option 1 - Add user to dialout group (permanent, requires logout/login):")
+            typer.echo("      sudo usermod -aG dialout $USER")
+            typer.echo("\n   Option 2 - Quick fix for this session:")
+            for port in ports:
+                typer.echo(f"      sudo chmod 666 {port}")
+            typer.echo("\n   Option 3 - Install udev rules (recommended):")
+            typer.echo("      solo setup --udev")
+        elif system == "Darwin":  # macOS
+            typer.echo("   To fix on macOS:\n")
+            typer.echo("   Option 1 - Quick fix for this session:")
+            for port in ports:
+                typer.echo(f"      sudo chmod 666 {port}")
+            typer.echo("\n   Option 2 - Check if another app is using the port")
+            typer.echo("      (Close Arduino IDE, other serial monitors, etc.)")
+        elif system == "Windows":
+            typer.echo("   To fix on Windows:\n")
+            typer.echo("   1. Check Device Manager to verify the COM port exists")
+            typer.echo("   2. Close any other apps using the port (Arduino IDE, etc.)")
+            typer.echo("   3. Try unplugging and replugging the USB cable")
+            typer.echo("   4. Run this terminal as Administrator if needed")
+        
+        typer.echo("")
+    
+    return all_ok
+
+
 def calibrate_arm(arm_type: str, port: str, robot_type: str = "so100", arm_id: Optional[str] = None) -> bool:
     """
     Calibrate a specific arm using the lerobot calibration system
     """
+    # Check port permissions first
+    typer.echo(f"\n🔒 Checking port permissions...")
+    if not check_port_permissions([port]):
+        return False
+    
+    # Lazy import heavy lerobot modules
+    typer.echo("\n⏳ Loading LeRobot modules...")
     from lerobot.scripts.lerobot_calibrate import calibrate, CalibrateConfig
+    typer.echo("✅ LeRobot modules loaded.\n")
     
     typer.echo(f"🔧 Calibrating {arm_type} arm on port {port}...")
+    
     try:
         # Determine the appropriate config class based on arm type and robot type
         leader_config_class, follower_config_class = get_robot_config_classes(robot_type)
@@ -69,9 +172,11 @@ def calibrate_realman_follower(realman_cfg: Dict, follower_id: str) -> bool:
     Returns:
         True if calibration succeeded, False otherwise
     """
-   
+    # Lazy import heavy lerobot modules
+    typer.echo("\n⏳ Loading LeRobot modules...")
     from lerobot.robots import make_robot_from_config
     from lerobot.robots.realman_follower import RealManFollowerConfig
+    typer.echo("✅ LeRobot modules loaded.\n")
     
     try:
         # Create RealManFollowerConfig
@@ -118,8 +223,15 @@ def calibrate_bimanual_arm(
     """
     Calibrate a bimanual arm (both left and right) using the lerobot calibration system
     """
-
+    # Check port permissions first
+    typer.echo(f"\n🔒 Checking port permissions...")
+    if not check_port_permissions([left_port, right_port]):
+        return False
+    
+    # Lazy import heavy lerobot modules
+    typer.echo("\n⏳ Loading LeRobot modules...")
     from lerobot.scripts.lerobot_calibrate import calibrate, CalibrateConfig
+    typer.echo("✅ LeRobot modules loaded.\n")
     
     typer.echo(f"🔧 Calibrating bimanual {arm_type} arms...")
     typer.echo(f"   • Left arm port: {left_port}")
@@ -170,9 +282,11 @@ def setup_motors_for_arm(arm_type: str, port: str, robot_type: str = "so100") ->
     Setup motor IDs for a specific arm (leader or follower)
     Returns True if successful, False otherwise
     """
-    
+    # Lazy import heavy lerobot modules
+    typer.echo("\n⏳ Loading LeRobot modules...")
     from lerobot.teleoperators import make_teleoperator_from_config
     from lerobot.robots import make_robot_from_config
+    typer.echo("✅ LeRobot modules loaded.\n")
 
     try:
         # Determine the appropriate config class based on arm type and robot type
@@ -217,9 +331,11 @@ def setup_motors_for_bimanual_arm(
     Setup motor IDs for bimanual arm (both left and right)
     Returns True if successful, False otherwise
     """
-    
+    # Lazy import heavy lerobot modules
+    typer.echo("\n⏳ Loading LeRobot modules...")
     from lerobot.teleoperators import make_teleoperator_from_config
     from lerobot.robots import make_robot_from_config
+    typer.echo("✅ LeRobot modules loaded.\n")
     
     typer.echo(f"🔧 Setting up motors for bimanual {arm_type} arms...")
     typer.echo(f"   • Left arm port: {left_port}")
@@ -287,32 +403,65 @@ def calibration(main_config: dict = None, arm_type: str = None) -> Dict:
     existing_right_follower_port = lerobot_config.get('right_follower_port')
     
     reuse_all = False
+    
+    # Helper to check if a port exists
+    def port_exists(port: str) -> bool:
+        return port and os.path.exists(port)
+    
     if existing_robot_type or existing_leader_port or existing_follower_port or existing_left_leader_port:
-        typer.echo("\n📦 Found existing configuration:")
-        if existing_robot_type:
-            typer.echo(f"   • Robot type: {existing_robot_type}")
-        # Show ports based on whether bimanual or not
+        # Validate ports before showing config
+        ports_valid = True
+        invalid_ports = []
+        
         if is_bimanual_robot(existing_robot_type):
-            if existing_left_leader_port:
-                typer.echo(f"   • Left leader port: {existing_left_leader_port}")
-            if existing_right_leader_port:
-                typer.echo(f"   • Right leader port: {existing_right_leader_port}")
-            if existing_left_follower_port:
-                typer.echo(f"   • Left follower port: {existing_left_follower_port}")
-            if existing_right_follower_port:
-                typer.echo(f"   • Right follower port: {existing_right_follower_port}")
+            for port_name, port in [
+                ("Left leader", existing_left_leader_port),
+                ("Right leader", existing_right_leader_port),
+                ("Left follower", existing_left_follower_port),
+                ("Right follower", existing_right_follower_port)
+            ]:
+                if port and not port_exists(port):
+                    ports_valid = False
+                    invalid_ports.append(f"{port_name}: {port}")
         else:
-            # Only show relevant port(s) based on arm_type
-            if arm_type == "leader" and existing_leader_port:
-                typer.echo(f"   • Leader port: {existing_leader_port}")
-            elif arm_type == "follower" and existing_follower_port:
-                typer.echo(f"   • Follower port: {existing_follower_port}")
+            if existing_leader_port and not port_exists(existing_leader_port):
+                ports_valid = False
+                invalid_ports.append(f"Leader: {existing_leader_port}")
+            if existing_follower_port and not port_exists(existing_follower_port):
+                ports_valid = False
+                invalid_ports.append(f"Follower: {existing_follower_port}")
+        
+        if not ports_valid:
+            typer.echo("\n⚠️  Saved ports are not connected:")
+            for p in invalid_ports:
+                typer.echo(f"   • {p}")
+            typer.echo("\n🔍 Will auto-detect connected arms...")
+        else:
+            typer.echo("\n📦 Found existing configuration:")
+            if existing_robot_type:
+                typer.echo(f"   • Robot type: {existing_robot_type}")
+            # Show ports based on whether bimanual or not
+            if is_bimanual_robot(existing_robot_type):
+                if existing_left_leader_port:
+                    typer.echo(f"   • Left leader port: {existing_left_leader_port}")
+                if existing_right_leader_port:
+                    typer.echo(f"   • Right leader port: {existing_right_leader_port}")
+                if existing_left_follower_port:
+                    typer.echo(f"   • Left follower port: {existing_left_follower_port}")
+                if existing_right_follower_port:
+                    typer.echo(f"   • Right follower port: {existing_right_follower_port}")
             else:
-                if existing_leader_port:
+                # Only show relevant port(s) based on arm_type
+                if arm_type == "leader" and existing_leader_port:
                     typer.echo(f"   • Leader port: {existing_leader_port}")
-                if existing_follower_port:
+                elif arm_type == "follower" and existing_follower_port:
                     typer.echo(f"   • Follower port: {existing_follower_port}")
-        reuse_all = Confirm.ask("Use these settings?", default=True)
+                else:
+                    if existing_leader_port:
+                        typer.echo(f"   • Leader port: {existing_leader_port}")
+                    if existing_follower_port:
+                        typer.echo(f"   • Follower port: {existing_follower_port}")
+            reuse_all = Confirm.ask("Use these settings?", default=True)
     
     if reuse_all and existing_robot_type:
         robot_type = existing_robot_type
@@ -349,13 +498,43 @@ def calibration(main_config: dict = None, arm_type: str = None) -> Dict:
                         return {}
                 
                 # Manual selection
-                from solo.commands.robots.lerobot.utils.helper import prompt_robot_type_selection
-                robot_type = prompt_robot_type_selection(default="so101")
+                typer.echo("\n🤖 Select your robot type:")
+                typer.echo("1. SO100 (single arm)")
+                typer.echo("2. SO101 (single arm)")
+                typer.echo("3. Koch (single arm)")
+                typer.echo("4. Bimanual SO100")
+                typer.echo("5. Bimanual SO101")
+                typer.echo("6. RealMan R1D2 (follower with SO101 leader)")
+                robot_choice = int(Prompt.ask("Enter robot type", default="2"))
+                robot_type_map = {
+                    1: "so100",
+                    2: "so101",
+                    3: "koch",
+                    4: "bi_so100",
+                    5: "bi_so101",
+                    6: "realman_r1d2"
+                }
+                robot_type = robot_type_map.get(robot_choice, "so101")
         except Exception as e:
             typer.echo(f"⚠️  Auto-detection failed: {e}")
             # Fall back to manual selection
-            from solo.commands.robots.lerobot.utils.helper import prompt_robot_type_selection
-            robot_type = prompt_robot_type_selection(default="so101")
+            typer.echo("\n🤖 Select your robot type:")
+            typer.echo("1. SO100 (single arm)")
+            typer.echo("2. SO101 (single arm)")
+            typer.echo("3. Koch (single arm)")
+            typer.echo("4. Bimanual SO100")
+            typer.echo("5. Bimanual SO101")
+            typer.echo("6. RealMan R1D2 (follower with SO101 leader)")
+            robot_choice = int(Prompt.ask("Enter robot type", default="2"))
+            robot_type_map = {
+                1: "so100",
+                2: "so101",
+                3: "koch",
+                4: "bi_so100",
+                5: "bi_so101",
+                6: "realman_r1d2"
+            }
+            robot_type = robot_type_map.get(robot_choice, "so101")
     
     config['robot_type'] = robot_type
     is_bimanual = is_bimanual_robot(robot_type)
@@ -396,8 +575,11 @@ def calibration(main_config: dict = None, arm_type: str = None) -> Dict:
                 typer.echo("❌ Failed to detect SO101 leader arm. Skipping leader calibration.")
             else:
                 config['leader_port'] = leader_port
-                from solo.commands.robots.lerobot.utils.helper import prompt_arm_id
-                leader_id = prompt_arm_id(main_config or {}, "leader", "so101")
+                known_leader_ids, _ = get_known_ids(main_config or {}, robot_type="so101")
+                default_leader_id = (main_config or {}).get('lerobot', {}).get('leader_id') or "so101_leader"
+                from solo.commands.robots.lerobot.config import display_known_ids
+                display_known_ids(known_leader_ids, "leader", detected_robot_type="so101", config=main_config or {})
+                leader_id = Prompt.ask("Enter leader id", default=default_leader_id)
                 
                 # Calibrate SO101 leader
                 if calibrate_arm("leader", leader_port, "so101", leader_id):
@@ -430,8 +612,11 @@ def calibration(main_config: dict = None, arm_type: str = None) -> Dict:
                 config['realman_config'] = realman_cfg  # Also store at top level for easy access
                 
                 # Set follower ID
-                from solo.commands.robots.lerobot.utils.helper import prompt_arm_id
-                follower_id = prompt_arm_id(main_config or {}, "follower", robot_type)
+                _, known_follower_ids = get_known_ids(main_config or {}, robot_type=robot_type)
+                default_follower_id = (main_config or {}).get('lerobot', {}).get('follower_id') or "realman_r1d2_follower"
+                from solo.commands.robots.lerobot.config import display_known_ids
+                display_known_ids(known_follower_ids, "follower", detected_robot_type=robot_type, config=main_config or {})
+                follower_id = Prompt.ask("Enter follower id", default=default_follower_id)
                 config['follower_id'] = follower_id
                 
                 # Add known ID - ensure we have proper main_config
@@ -474,8 +659,11 @@ def calibration(main_config: dict = None, arm_type: str = None) -> Dict:
                 config['right_leader_port'] = right_leader_port
                 
                 # Select leader id
-                from solo.commands.robots.lerobot.utils.helper import prompt_arm_id
-                leader_id = prompt_arm_id(main_config or {}, "leader", robot_type)
+                known_leader_ids, _ = get_known_ids(main_config or {}, robot_type=robot_type)
+                default_leader_id = (main_config or {}).get('lerobot', {}).get('leader_id') or f"{robot_type}_leader"
+                from solo.commands.robots.lerobot.config import display_known_ids
+                display_known_ids(known_leader_ids, "leader", detected_robot_type=robot_type, config=main_config or {})
+                leader_id = Prompt.ask("Enter leader id", default=default_leader_id)
                 
                 # Calibrate bimanual leader arms
                 if calibrate_bimanual_arm("leader", left_leader_port, right_leader_port, robot_type, leader_id):
@@ -501,8 +689,11 @@ def calibration(main_config: dict = None, arm_type: str = None) -> Dict:
                 config['right_follower_port'] = right_follower_port
                 
                 # Select follower id
-                from solo.commands.robots.lerobot.utils.helper import prompt_arm_id
-                follower_id = prompt_arm_id(main_config or {}, "follower", robot_type)
+                _, known_follower_ids = get_known_ids(main_config or {}, robot_type=robot_type)
+                default_follower_id = (main_config or {}).get('lerobot', {}).get('follower_id') or f"{robot_type}_follower"
+                from solo.commands.robots.lerobot.config import display_known_ids
+                display_known_ids(known_follower_ids, "follower", detected_robot_type=robot_type, config=main_config or {})
+                follower_id = Prompt.ask("Enter follower id", default=default_follower_id)
                 
                 # Calibrate bimanual follower arms
                 if calibrate_bimanual_arm("follower", left_follower_port, right_follower_port, robot_type, follower_id):
@@ -512,6 +703,11 @@ def calibration(main_config: dict = None, arm_type: str = None) -> Dict:
                 else:
                     typer.echo("❌ Bimanual follower arms calibration failed.")
                     config['follower_calibrated'] = False
+        
+        # Save bimanual config
+        if main_config is None:
+            main_config = {}
+        save_lerobot_config(main_config, config)
     
     else:
         # Single-arm calibration workflow
@@ -530,8 +726,11 @@ def calibration(main_config: dict = None, arm_type: str = None) -> Dict:
             else:
                 config['leader_port'] = leader_port
                 # Select leader id
-                from solo.commands.robots.lerobot.utils.helper import prompt_arm_id
-                leader_id = prompt_arm_id(main_config or {}, "leader", robot_type)
+                known_leader_ids, _ = get_known_ids(main_config or {}, robot_type=robot_type)
+                default_leader_id = (main_config or {}).get('lerobot', {}).get('leader_id') or f"{robot_type}_leader"
+                from solo.commands.robots.lerobot.config import display_known_ids
+                display_known_ids(known_leader_ids, "leader", detected_robot_type=robot_type, config=main_config or {})
+                leader_id = Prompt.ask("Enter leader id", default=default_leader_id)
                 
                 # Calibrate leader arm
                 if calibrate_arm("leader", leader_port, robot_type, leader_id):
@@ -557,8 +756,11 @@ def calibration(main_config: dict = None, arm_type: str = None) -> Dict:
             else:
                 config['follower_port'] = follower_port
                 # Select follower id
-                from solo.commands.robots.lerobot.utils.helper import prompt_arm_id
-                follower_id = prompt_arm_id(main_config or {}, "follower", robot_type)
+                _, known_follower_ids = get_known_ids(main_config or {}, robot_type=robot_type)
+                default_follower_id = (main_config or {}).get('lerobot', {}).get('follower_id') or f"{robot_type}_follower"
+                from solo.commands.robots.lerobot.config import display_known_ids
+                display_known_ids(known_follower_ids, "follower", detected_robot_type=robot_type, config=main_config or {})
+                follower_id = Prompt.ask("Enter follower id", default=default_follower_id)
                 
                 # Calibrate follower arm
                 if calibrate_arm("follower", follower_port, robot_type, follower_id):
@@ -568,6 +770,11 @@ def calibration(main_config: dict = None, arm_type: str = None) -> Dict:
                 else:
                     typer.echo("❌ Follower arm calibration failed.")
                     config['follower_calibrated'] = False
+        
+        # Save single-arm config
+        if main_config is None:
+            main_config = {}
+        save_lerobot_config(main_config, config)
     
     return config
 
@@ -606,12 +813,20 @@ def display_arms_status(robot_type: str, leader_port: str, follower_port: str, a
 
 def check_calibration_success(arm_config: dict, setup_motors: bool = False) -> None:
     """Check and report calibration success status with appropriate messages."""
-    leader_configured = arm_config.get('leader_port') and arm_config.get('leader_calibrated')
-    # For RealMan, follower uses network (realman_config) instead of USB port
-    follower_configured = (
-        (arm_config.get('follower_port') or arm_config.get('realman_config')) 
-        and arm_config.get('follower_calibrated')
+    # Check for single-arm or bimanual leader ports
+    has_leader_port = (
+        arm_config.get('leader_port') or 
+        (arm_config.get('left_leader_port') and arm_config.get('right_leader_port'))
     )
+    leader_configured = has_leader_port and arm_config.get('leader_calibrated')
+    
+    # Check for single-arm, bimanual, or RealMan follower
+    has_follower_port = (
+        arm_config.get('follower_port') or 
+        arm_config.get('realman_config') or
+        (arm_config.get('left_follower_port') and arm_config.get('right_follower_port'))
+    )
+    follower_configured = has_follower_port and arm_config.get('follower_calibrated')
     
     if leader_configured and follower_configured:
         typer.echo("🎉 All arms calibrated successfully!")

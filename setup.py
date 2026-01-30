@@ -26,7 +26,7 @@ setup(
         "rich",
         "huggingface_hub",
         "pydantic",
-        "lerobot[feetech,dynamixel] @ git+https://github.com/zeeshaan-ai/lerobot.git",
+        "lerobot[feetech,dynamixel] @ https://github.com/zeeshaan-ai/lerobot/archive/refs/heads/hackathon.tar.gz",
         "transformers",
         "accelerate",
         "num2words"

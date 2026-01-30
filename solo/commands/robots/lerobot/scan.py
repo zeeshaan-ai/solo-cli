@@ -297,6 +297,199 @@ def read_feetech_voltage(port: str, motor_id: int = 1, baudrate: int = 1_000_000
         return None
 
 
+def set_feetech_torque(port: str, motor_ids: list[int] = None, enable: bool = True, baudrate: int = 1_000_000, protocol: int = 0) -> bool:
+    """
+    Enable or disable torque on Feetech motors.
+    
+    Args:
+        port: Serial port path
+        motor_ids: List of motor IDs (default: 1-6)
+        enable: True to enable torque, False to disable
+        baudrate: Baud rate
+        protocol: Feetech protocol version
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    if motor_ids is None:
+        motor_ids = list(range(1, 7))
+    
+    try:
+        import scservo_sdk as scs
+    except ImportError:
+        return False
+    
+    try:
+        port_handler = scs.PortHandler(port)
+        packet_handler = scs.PacketHandler(protocol)
+        
+        if not port_handler.openPort():
+            return False
+        
+        port_handler.setBaudRate(baudrate)
+        
+        # Torque_Enable is at address 40 for STS series
+        torque_value = 1 if enable else 0
+        success = True
+        for motor_id in motor_ids:
+            result, _ = packet_handler.write1ByteTxRx(port_handler, motor_id, 40, torque_value)
+            if result != scs.COMM_SUCCESS:
+                success = False
+        
+        port_handler.closePort()
+        return success
+    except Exception:
+        return False
+
+
+def read_feetech_positions(port: str, motor_ids: list[int] = None, baudrate: int = 1_000_000, protocol: int = 0) -> dict[int, int]:
+    """
+    Read present positions from Feetech motors.
+    
+    Args:
+        port: Serial port path
+        motor_ids: List of motor IDs to read (default: 1-6)
+        baudrate: Baud rate
+        protocol: Feetech protocol version
+    
+    Returns:
+        Dictionary of {motor_id: position}
+    """
+    if motor_ids is None:
+        motor_ids = list(range(1, 7))
+    
+    try:
+        import scservo_sdk as scs
+    except ImportError:
+        return {}
+    
+    positions = {}
+    try:
+        port_handler = scs.PortHandler(port)
+        packet_handler = scs.PacketHandler(protocol)
+        
+        if not port_handler.openPort():
+            return {}
+        
+        port_handler.setBaudRate(baudrate)
+        
+        for motor_id in motor_ids:
+            # Present_Position is at address 56, 2 bytes for STS series
+            position, result, _ = packet_handler.read2ByteTxRx(port_handler, motor_id, 56)
+            if result == scs.COMM_SUCCESS:
+                positions[motor_id] = position
+        
+        port_handler.closePort()
+    except Exception:
+        pass
+    
+    return positions
+
+
+def detect_movement_on_port(port: str, duration: float = 2.0, threshold: int = 50, verbose: bool = False) -> bool:
+    """
+    Detect if motors on a port are being moved by comparing positions over time.
+    
+    Args:
+        port: Serial port path
+        duration: How long to monitor for movement (seconds)
+        threshold: Minimum position change to count as movement
+        verbose: Print debug info
+    
+    Returns:
+        True if movement detected, False otherwise
+    """
+    import time
+    
+    # Read initial positions
+    initial_positions = read_feetech_positions(port)
+    if not initial_positions:
+        return False
+    
+    # Wait and read again
+    time.sleep(duration)
+    
+    # Read final positions
+    final_positions = read_feetech_positions(port)
+    if not final_positions:
+        return False
+    
+    # Check for movement
+    total_movement = 0
+    for motor_id in initial_positions:
+        if motor_id in final_positions:
+            movement = abs(final_positions[motor_id] - initial_positions[motor_id])
+            total_movement += movement
+            if verbose and movement > 0:
+                typer.echo(f"   Motor {motor_id}: moved {movement} units")
+    
+    if verbose:
+        typer.echo(f"   Total movement: {total_movement} units (threshold: {threshold})")
+    
+    return total_movement >= threshold
+
+
+def detect_moving_port(ports: list[str], duration: float = 3.0, threshold: int = 50, verbose: bool = False) -> Optional[str]:
+    """
+    Monitor multiple ports simultaneously and detect which one has movement.
+    
+    Args:
+        ports: List of serial ports to monitor
+        duration: How long to monitor for movement (seconds)
+        threshold: Minimum position change to count as movement
+        verbose: Print debug info
+    
+    Returns:
+        Port with detected movement, or None if no movement detected
+    """
+    import time
+    
+    if not ports:
+        return None
+    
+    # Read initial positions from all ports
+    initial_positions = {}
+    for port in ports:
+        positions = read_feetech_positions(port)
+        if positions:
+            initial_positions[port] = positions
+    
+    if not initial_positions:
+        if verbose:
+            typer.echo("   ⚠️  Could not read positions from any port")
+        return None
+    
+    # Wait while user moves the arm
+    time.sleep(duration)
+    
+    # Read final positions and calculate movement for each port
+    port_movements = {}
+    for port in initial_positions:
+        final_positions = read_feetech_positions(port)
+        if not final_positions:
+            continue
+        
+        total_movement = 0
+        for motor_id in initial_positions[port]:
+            if motor_id in final_positions:
+                movement = abs(final_positions[motor_id] - initial_positions[port][motor_id])
+                total_movement += movement
+        
+        port_movements[port] = total_movement
+        if verbose:
+            typer.echo(f"   {port}: {total_movement} units")
+    
+    # Find port with most movement above threshold
+    best_port = None
+    best_movement = 0
+    for port, movement in port_movements.items():
+        if movement >= threshold and movement > best_movement:
+            best_port = port
+            best_movement = movement
+    
+    return best_port
+
+
 def detect_so_arm_type_by_voltage(port: str, verbose: bool = False) -> Optional[str]:
     """
     Detect if a SO100/SO101 arm is leader or follower based on motor voltage.
@@ -421,8 +614,17 @@ def auto_detect_robot_type(verbose: bool = True) -> tuple[Optional[str], list[tu
     # Determine final robot type
     if len(detected_types) == 1:
         robot_type = detected_types.pop()
-        if verbose:
-            typer.echo(f"✅ Detected robot type: {robot_type.upper()}")
+        
+        # Check for bimanual configuration: 4 ports = full bimanual (2 leaders + 2 followers)
+        # With 2 ports we can't distinguish single-arm (1L+1F) from bimanual half (2L or 2F)
+        ports_with_motors = len([p for p in port_info if p[1] is not None])
+        if ports_with_motors >= 4 and robot_type in ("so100", "so101"):
+            robot_type = f"bi_{robot_type}"
+            if verbose:
+                typer.echo(f"✅ Detected robot type: {robot_type.upper()} (bimanual - {ports_with_motors} arms found)")
+        else:
+            if verbose:
+                typer.echo(f"✅ Detected robot type: {robot_type.upper()}")
         return robot_type, port_info
     elif len(detected_types) > 1:
         if verbose:

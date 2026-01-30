@@ -204,33 +204,95 @@ def auto_detect_both_ports(robot_type: str = None) -> tuple[Optional[str], Optio
 
 def detect_bimanual_arm_ports(arm_type: str) -> tuple[Optional[str], Optional[str]]:
     """
-    Detect ports for bimanual arm (left and right)
+    Detect ports for bimanual arm (left and right) using voltage detection and movement.
     Returns (left_port, right_port)
     """
+    from solo.commands.robots.lerobot.scan import (
+        get_serial_ports, 
+        scan_feetech_port, 
+        detect_moving_port,
+        detect_so_arm_type_by_voltage,
+        set_feetech_torque
+    )
+    
     typer.echo(f"\n🔍 Detecting ports for bimanual {arm_type} arms...")
-    typer.echo(f"⚠️  You'll need to connect TWO {arm_type} arms: LEFT and RIGHT")
     
-    # Detect left arm
-    typer.echo(f"\n👈 First, let's detect the LEFT {arm_type} arm...")
-    left_port, _ = detect_arm_port(f"left {arm_type}")
+    # Find all ports with Feetech motors and filter by voltage
+    ports = get_serial_ports()
+    candidate_ports = []
     
-    if not left_port:
-        typer.echo(f"❌ Failed to detect left {arm_type} arm")
+    for port in ports:
+        motors = scan_feetech_port(port, protocol=0)
+        if motors:
+            # Check voltage to determine if leader (5V) or follower (12V)
+            detected_arm_type = detect_so_arm_type_by_voltage(port, verbose=False)
+            if detected_arm_type == arm_type or detected_arm_type == "unknown":
+                candidate_ports.append(port)
+                typer.echo(f"   ✅ {port}: {detected_arm_type or 'unknown'} arm (matches {arm_type})")
+            else:
+                typer.echo(f"   ⏭️  {port}: {detected_arm_type} arm (skipping, looking for {arm_type})")
+    
+    if len(candidate_ports) < 2:
+        typer.echo(f"❌ Need at least 2 {arm_type} arms connected, found {len(candidate_ports)}")
+        if len(candidate_ports) == 1:
+            typer.echo(f"   Found: {candidate_ports[0]}")
         return None, None
     
-    # Detect right arm
-    typer.echo(f"\n👉 Now, let's detect the RIGHT {arm_type} arm...")
-    right_port, _ = detect_arm_port(f"right {arm_type}")
+    typer.echo(f"   Found {len(candidate_ports)} {arm_type} ports: {candidate_ports}")
+    feetech_ports = candidate_ports
     
-    if not right_port:
-        typer.echo(f"❌ Failed to detect right {arm_type} arm")
-        return left_port, None
+    # Disable torque on all candidate ports for movement detection (only needed for followers)
+    if arm_type == "follower":
+        typer.echo("   🔓 Disabling torque for movement detection...")
+        for port in feetech_ports:
+            set_feetech_torque(port, enable=False)
     
-    typer.echo(f"\n✅ Detected bimanual {arm_type} arms:")
-    typer.echo(f"   • Left {arm_type}: {left_port}")
-    typer.echo(f"   • Right {arm_type}: {right_port}")
+    try:
+        # Detect LEFT arm by movement - monitor all ports simultaneously
+        typer.echo(f"\n👈 Move the LEFT {arm_type} arm now...")
+        typer.echo("   (Move any joint back and forth continuously)")
+        input("   Press Enter, then KEEP MOVING the arm...")
+        
+        left_port = detect_moving_port(feetech_ports, duration=3.0, threshold=50, verbose=True)
+        
+        if left_port:
+            typer.echo(f"   ✅ Detected LEFT {arm_type} arm on {left_port}")
+        else:
+            typer.echo(f"❌ No movement detected. Please try again with larger movements.")
+            return None, None
+        
+        # Detect RIGHT arm by movement (from remaining ports)
+        remaining_ports = [p for p in feetech_ports if p != left_port]
+        
+        if len(remaining_ports) == 1:
+            # Only one port left, must be the right arm
+            right_port = remaining_ports[0]
+            typer.echo(f"\n👉 RIGHT {arm_type} arm detected on {right_port} (only remaining port)")
+        else:
+            typer.echo(f"\n👉 Move the RIGHT {arm_type} arm now...")
+            typer.echo("   (Move any joint back and forth continuously)")
+            input("   Press Enter, then KEEP MOVING the arm...")
+            
+            right_port = detect_moving_port(remaining_ports, duration=3.0, threshold=50, verbose=True)
+            
+            if right_port:
+                typer.echo(f"   ✅ Detected RIGHT {arm_type} arm on {right_port}")
+            else:
+                typer.echo(f"❌ No movement detected for right arm.")
+                return left_port, None
+        
+        typer.echo(f"\n✅ Detected bimanual {arm_type} arms:")
+        typer.echo(f"   • Left {arm_type}: {left_port}")
+        typer.echo(f"   • Right {arm_type}: {right_port}")
+        
+        return left_port, right_port
     
-    return left_port, right_port
+    finally:
+        # Re-enable torque only on follower arms (leaders should stay torque-free)
+        if arm_type == "follower":
+            typer.echo("   🔒 Re-enabling torque...")
+            for port in feetech_ports:
+                set_feetech_torque(port, enable=True)
 
 
 def detect_and_retry_ports(leader_port: str, follower_port: str, config: dict = None) -> tuple[str, str]:
